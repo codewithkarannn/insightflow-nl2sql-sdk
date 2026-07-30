@@ -18,20 +18,18 @@ public class AiSqlSynthesizer : ISqlSynthesizer
         _options = options.Value;
     }
 
-    public async Task<string> SynthesizeSqlAsync(
+   public async Task<string> SynthesizeSqlAsync(
         string userPrompt, 
         DatabaseSchema schema, 
         CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_options.ApiKey))
+        if (string.IsNullOrWhiteSpace(_options.ApiKey) && !_options.BaseUrl.Contains("localhost"))
         {
-            throw new InvalidOperationException(" API key is missing in Nl2SqlOptions.");
+            throw new InvalidOperationException("API Key is missing in Nl2SqlOptions.");
         }
 
-        // 1. Format the database schema into clean Markdown text
         var formattedSchema = FormatSchemaToText(schema);
 
-        // 2. Build system instructions
         var systemPrompt = $"""
             You are a strict, expert text-to-SQL engine.
             Your job is to translate user questions into valid SQL queries based strictly on the provided schema.
@@ -46,7 +44,6 @@ public class AiSqlSynthesizer : ISqlSynthesizer
             4. If the question cannot be answered using the provided schema, return: SELECT 'ERROR: Insufficient schema' AS Error;
             """;
 
-        // 3. Prepare payload for AI Chat Completions API
         var requestBody = new
         {
             model = _options.ModelName,
@@ -55,24 +52,36 @@ public class AiSqlSynthesizer : ISqlSynthesizer
                 new { role = "system", content = systemPrompt },
                 new { role = "user", content = userPrompt }
             },
-            temperature = 0.0 // Zero temperature for deterministic SQL outputs
+            temperature = 0.0
         };
 
         var jsonPayload = JsonSerializer.Serialize(requestBody);
-        using var request = new HttpRequestMessage(HttpMethod.Post, "[https://api.openai.com/v1/chat/completions](https://api.openai.com/v1/chat/completions)");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+
+        // Dynamically append /chat/completions to whatever base URL is configured
+        var baseUrlTrimmed = _options.BaseUrl.TrimEnd('/');
+        var fullEndpoint = new Uri($"{baseUrlTrimmed}/chat/completions");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, fullEndpoint);
+        
+        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+        }
+        
+        // OpenRouter optional tracking headers (ignored by OpenAI/Ollama)
+        request.Headers.TryAddWithoutValidation("HTTP-Referer", "[https://github.com/InsightFlow](https://github.com/InsightFlow)");
+        request.Headers.TryAddWithoutValidation("X-Title", "InsightFlow NL2SQL");
+
         request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
-        // 4. Send request
         using var response = await _httpClient.SendAsync(request, ct);
         var responseContent = await response.Content.ReadAsStringAsync(ct);
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new HttpRequestException($" API Error ({response.StatusCode}): {responseContent}");
+            throw new HttpRequestException($"LLM Provider API Error ({response.StatusCode}): {responseContent}");
         }
 
-        // 5. Extract generated SQL string from response
         using var doc = JsonDocument.Parse(responseContent);
         var rawSql = doc.RootElement
             .GetProperty("choices")[0]
@@ -102,4 +111,6 @@ public class AiSqlSynthesizer : ISqlSynthesizer
 
         return sb.ToString();
     }
+
+   
 }

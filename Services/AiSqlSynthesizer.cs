@@ -41,7 +41,10 @@ public class AiSqlSynthesizer : ISqlSynthesizer
             1. Return ONLY the raw SQL query. Do NOT use markdown code fences (like ```sql).
             2. Do NOT add any explanations, introductory text, or concluding notes.
             3. Generate ONLY read-only SELECT queries.
-            4. If the question cannot be answered using the provided schema, return: SELECT 'ERROR: Insufficient schema' AS Error;
+            4. If the user asks to modify, update, delete, drop, or alter data/tables, return EXACTLY:
+               SELECT 'ERROR: Destructive operations are strictly prohibited' AS Error;
+            5. If the question cannot be answered using the schema, return EXACTLY:
+               SELECT 'ERROR: Question cannot be answered with available schema' AS Error;
             """;
 
         var requestBody = new

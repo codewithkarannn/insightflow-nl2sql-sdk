@@ -12,7 +12,6 @@ public class Nl2SqlEngine : INl2SqlEngine
     private readonly Nl2SqlOptions _options;
     private readonly ISqlExecutor _executor;
 
-    // Dependency Injection injects whatever providers were registered (SQLite, MySQL, OpenAI, etc.)
     public Nl2SqlEngine(
         ISchemaExtractor schemaExtractor,
         ISqlSynthesizer synthesizer,
@@ -35,13 +34,28 @@ public class Nl2SqlEngine : INl2SqlEngine
     {
         try
         {
-            // Step 1: Extract database schema (Masking sensitive columns automatically)
+            // 🛡️ 1. Direct Input Pre-Check: Block raw DDL/DML mutation prompts upfront without hitting LLM
+            var trimmedPrompt = userPrompt.TrimStart();
+            if (trimmedPrompt.StartsWith("DELETE", StringComparison.OrdinalIgnoreCase) ||
+                trimmedPrompt.StartsWith("DROP", StringComparison.OrdinalIgnoreCase) ||
+                trimmedPrompt.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase) ||
+                trimmedPrompt.StartsWith("INSERT", StringComparison.OrdinalIgnoreCase) ||
+                trimmedPrompt.StartsWith("ALTER", StringComparison.OrdinalIgnoreCase))
+            {
+                return new Nl2SqlQueryResult(
+                    IsSuccess: false,
+                    GeneratedSql: userPrompt,
+                    Data: null,
+                    ErrorMessage: "Security Violation: Direct DDL/DML mutation statements are strictly prohibited.");
+            }
+
+            // 2. Extract database schema
             var schema = await _schemaExtractor.ExtractSchemaAsync(connectionString, securityContext, ct);
 
-            // Step 2: Convert natural language prompt to raw SQL via LLM
+            // 3. Convert natural language prompt to raw SQL via LLM synthesizer
             var rawSql = await _synthesizer.SynthesizeSqlAsync(userPrompt, schema, ct);
 
-            // Step 3: Validate SQL (Must be SELECT-only, enforce max row limit)
+            // 4. Validate SQL via AST Guardrails
             var (isSafe, sanitizedSql, violationError) = _guardrail.ValidateAndSecureSql(rawSql, securityContext, _options.MaxRowLimit);
 
             if (!isSafe)
@@ -53,12 +67,32 @@ public class Nl2SqlEngine : INl2SqlEngine
                     ErrorMessage: $"Security Violation: {violationError}");
             }
 
-            // Step 4: Return result (Query execution step)
+            // 5. Execute query
             var dataRows = await _executor.ExecuteReaderAsync(
                 connectionString, 
                 sanitizedSql, 
                 _options.QueryTimeoutSeconds, 
                 ct);
+
+            // Step 5: Check if LLM returned a synthetic error response
+            if (dataRows.Count == 1 && dataRows[0].ContainsKey("Error"))
+            {
+                var errorMessage = dataRows[0]["Error"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(errorMessage) && errorMessage.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new Nl2SqlQueryResult(
+                        IsSuccess: false,
+                        GeneratedSql: sanitizedSql,
+                        Data: null,
+                        ErrorMessage: errorMessage);
+                }
+            }
+
+            //  Step 6: Post-Execution Sanitization (Masked columns)
+            if (securityContext?.RestrictedColumns != null && securityContext.RestrictedColumns.Count > 0 && dataRows != null)
+            {
+                SanitizeDataRows(dataRows, securityContext.RestrictedColumns);
+            }
 
             return new Nl2SqlQueryResult(
                 IsSuccess: true, 
@@ -73,6 +107,22 @@ public class Nl2SqlEngine : INl2SqlEngine
                 GeneratedSql: string.Empty, 
                 Data: null, 
                 ErrorMessage: ex.Message);
+        }
+    }
+
+    private static void SanitizeDataRows(List<Dictionary<string, object?>> rows, HashSet<string> restrictedColumns)
+    {
+        var restrictedNames = restrictedColumns
+            .Select(col => col.Contains('.') ? col.Split('.')[1] : col)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var row in rows)
+        {
+            var keysToRemove = row.Keys.Where(key => restrictedNames.Contains(key)).ToList();
+            foreach (var key in keysToRemove)
+            {
+                row.Remove(key);
+            }
         }
     }
 }

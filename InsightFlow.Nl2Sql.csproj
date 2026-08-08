@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>InsightFlow.Nl2Sql</PackageId>
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <Authors>InsightFlow AI</Authors>
     <Company>InsightFlow AI</Company>
     <Description>Plug-and-play Natural Language to SQL (NL2SQL) engine with built-in Column Masking, Row-Level Security, and AST Guardrails for .NET.</Description>

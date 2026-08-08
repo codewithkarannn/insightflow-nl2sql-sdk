@@ -34,7 +34,7 @@ public class Nl2SqlEngine : INl2SqlEngine
     {
         try
         {
-            // 🛡️ 1. Direct Input Pre-Check: Block raw DDL/DML mutation prompts upfront without hitting LLM
+            // 1. Direct Input Pre-Check: Block raw DDL/DML mutation prompts upfront without hitting LLM
             var trimmedPrompt = userPrompt.TrimStart();
             if (trimmedPrompt.StartsWith("DELETE", StringComparison.OrdinalIgnoreCase) ||
                 trimmedPrompt.StartsWith("DROP", StringComparison.OrdinalIgnoreCase) ||
@@ -74,31 +74,24 @@ public class Nl2SqlEngine : INl2SqlEngine
                 _options.QueryTimeoutSeconds, 
                 ct);
 
-            // Step 5: Check if LLM returned a synthetic error response
+            // 6. Check for LLM synthetic error response
             if (dataRows.Count == 1 && dataRows[0].ContainsKey("Error"))
             {
-                var errorMessage = dataRows[0]["Error"]?.ToString();
-                if (!string.IsNullOrWhiteSpace(errorMessage) && errorMessage.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
+                var errVal = dataRows[0]["Error"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(errVal) && errVal.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
                 {
-                    return new Nl2SqlQueryResult(
-                        IsSuccess: false,
-                        GeneratedSql: sanitizedSql,
-                        Data: null,
-                        ErrorMessage: errorMessage);
+                    return Nl2SqlQueryResult.Failure(errVal, sanitizedSql);
                 }
             }
 
-            //  Step 6: Post-Execution Sanitization (Masked columns)
+            // 7: Post-Execution Sanitization (Masked columns)
             if (securityContext?.RestrictedColumns != null && securityContext.RestrictedColumns.Count > 0 && dataRows != null)
             {
                 SanitizeDataRows(dataRows, securityContext.RestrictedColumns);
             }
 
-            return new Nl2SqlQueryResult(
-                IsSuccess: true, 
-                GeneratedSql: sanitizedSql, 
-                Data: dataRows, 
-                ErrorMessage: null);
+            bool returnJson = _options.ResponseFormat == OutputFormat.Json;
+            return Nl2SqlQueryResult.Success(sanitizedSql, dataRows, returnJson);
         }
         catch (Exception ex)
         {
